@@ -1,0 +1,1649 @@
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing CentOS7: Dockerfile for building CentOS images
+#
+FROM       centos:centos7.1.1503 # 基础镜像
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com> # 谁创建，谁维护
+
+ENV TZ "Asia/Shanghai"     # 环境变量可以写多个
+ENV TERM xterm
+
+ADD aliyun-mirror.repo /etc/yum.repos.d/CentOS-Base.repo # add 文件也可以写多个， 这条命令是复制文件到 docker里边
+ADD aliyun-epel.repo /etc/yum.repos.d/epel.repo # add命令比copy多两个功能 1。可以写http地址直接拷贝到容器里 2.可以自动解压文件到容器里
+
+RUN yum install -y curl wget tar bzip2 unzip vim-enhanced passwd sudo yum-utils hostname net-tools rsync man && \
+    yum install -y gcc gcc-c++ git make automake cmake patch logrotate python-devel libpng-devel libjpeg-devel && \
+    yum install -y --enablerepo=epel pwgen python-pip && \
+    yum clean all  # run指令就是在linux里边里边执行
+
+RUN pip install supervisor  # 进程管理工具
+ADD supervisord.conf /etc/supervisord.conf  # 添加主配置文件
+
+RUN mkdir -p /etc/supervisor.conf.d && \  # supervisord配置文件目录
+    mkdir -p /var/log/supervisor # supervisord日志目录
+
+EXPOSE 22  # 暴露容器22号端口给宿主机
+
+ENTRYPOINT ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisord.conf"]  #  最后一条生效，每次都需要执行的命令，每次启动的时候
+
+
+
+
+
+###########################
+# 构建第一镜像
+# 完整命名
+# docker build -t registry_url/namespace/csphere/centos:7.1
+
+# 7.1 是版本号，不给是latest
+# . Dockerfile 表示此文件在当前目录下 ，否则要给定完整目录名
+docker build -t csphere/centos:7.1 .
+
+#######################################
+# 运行一个容器 docker run
+# -it 前台启动,显示到当前终端(tty)
+# -d 会把容器在后台，且返回容器长id号
+# -P 宿主机随机使用一个端口(宿主机不用指定端口) 映射到docker 22端口
+# -p 固定2222 映射到docker 22端口,直到容器停止删除 
+# --name 给容器起名，方便后续管理
+# csphere/centos:7.1 基于此镜像创建容器
+docker  run -d -p 2222:22 --name base csphere/centos:7.1
+d1e5288905daae334154fda9d6f9bd711c92ce028b5f676758c0c2e08803b970
+
+##############################################
+# 查看容器
+# 查看运行状态下的所有容器
+docker ps
+CONTAINER ID        IMAGE                COMMAND                  CREATED              STATUS              PORTS                  NAMES
+d1e5288905da        csphere/centos:7.1   "/usr/bin/supervisord"   About a minute ago   Up About a minute   0.0.0.0:2222->22/tcp   base
+
+# 查看所有容器，
+# CONTAINER ID：容器短id号
+# IMAGE 从哪个镜像创建此容器
+# COMMAND 启动容器时的命令
+# CREATED 创建时间
+# PORTS 端口映射
+# NAMES 容器名字
+docker ps -a
+CONTAINER ID        IMAGE                COMMAND                  CREATED             STATUS                    PORTS                  NAMES
+d1e5288905da        csphere/centos:7.1   "/usr/bin/supervisord"   16 minutes ago      Up 16 minutes             0.0.0.0:2222->22/tcp   base
+239b76773d9a        a15ab1f794f4         "/bin/sh"                16 hours ago        Exited (0) 7 hours ago                           cocky_ardinghelli
+5b3cffe28998        2b8fd9751c4c         "/bin/echo hello word"   17 hours ago        Exited (0) 17 hours ago                          stoic_perlman
+
+
+# 构建容器思路，有一个基础镜像，中间件镜像，应用镜像
+###########################################
+# 例子1 Start
+# 构建一个 base + php-fpm 镜像
+pwd
+/root/docker-training/php-fpm
+ls
+Dockerfile  nginx_default.conf  nginx_nginx.conf  php_www.conf  supervisor_nginx.conf  supervisor_php-fpm.conf
+
+cat Dockerfile
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing php-fpm: Dockerfile for building php-fpm images
+#
+FROM       csphere/centos:7.1 # 基于csphere/centos:7.1作为父镜像作为
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com>
+
+# Set environment variable
+ENV APP_DIR /app  # 变量
+
+RUN     yum -y swap -- remove fakesystemd -- install systemd systemd-libs && \
+        yum -y install nginx php-cli php-mysql php-pear php-ldap php-mbstring php-soap php-dom php-gd php-xmlrpc php-fpm php-mcrypt && \ 
+    yum clean all # 安软件包
+
+ADD nginx_nginx.conf /etc/nginx/nginx.conf
+ADD nginx_default.conf /etc/nginx/conf.d/default.conf
+
+ADD php_www.conf /etc/php-fpm.d/www.conf
+RUN sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php.ini
+
+RUN mkdir -p /app && echo "<?php phpinfo(); ?>" > ${APP_DIR}/info.php # 创建测试文件
+
+EXPOSE  80 443 # 容器暴露两个端口
+
+ADD supervisor_nginx.conf /etc/supervisor.conf.d/nginx.conf
+ADD supervisor_php-fpm.conf /etc/supervisor.conf.d/php-fpm.conf
+
+ONBUILD ADD . /app   # ONBUILD 对于dockerfile当中非常重要，对于以后开发heck，发布产品，
+ONBUILD RUN chown -R nginx:nginx /app  # 有一个php from的时候才生效，会在下一个镜像里生效
+#####
+# 构建镜像
+# 镜像起名最好见名思意
+docker build -t csphere/php-fpm:5.4 .
+
+# 查看生成的镜像
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+csphere/php-fpm     5.4                 f1fdd907b89d        23 seconds ago      685.5 MB
+
+# 运行容器, 用代理转发
+docker run -d -p 8080:80 --name website csphere/php-fpm:5.4
+cc63b313e5016808e198fc787ceb9e60b6a7a1ba8b99704ba8aae4996889a65e
+
+# 测试
+curl -I http://123.56.72.160:8080/info.php
+HTTP/1.1 200 OK
+Server: nginx/1.10.1
+Date: Thu, 15 Sep 2016 02:08:41 GMT
+Content-Type: text/html
+Connection: keep-alive
+Vary: Accept-Encoding
+X-Powered-By: PHP/5.4.16
+
+# 连接到容器里
+# -it website /bin/bash 连接到哪个容器，执行什么命令
+docker exec -it website /bin/bash
+[root@cc63b313e501 /]# 
+
+# 查看运行的守护进程
+[root@cc63b313e501 /]# supervisorctl 
+supervisor> status
+nginx                            RUNNING   pid 7, uptime 0:09:55
+php-fpm                          RUNNING   pid 8, uptime 0:09:55
+# 退出容器界面
+supervisor> exit 
+[root@cc63b313e501 /]# exit 
+exit
+
+# 例子1 End
+
+##############################################
+# 例子2
+# 构建mysql镜像 start
+pwd
+/root/docker-training/mysql
+ls -l
+total 12
+-rw-r--r-- 1 root root  497 Sep 15 01:11 Dockerfile
+-rw-r--r-- 1 root root  282 Sep 15 10:22 mysqld_charset.cnf
+drwxr-xr-x 2 root root 4096 Sep 15 01:11 scripts
+
+cat Dockerfile 
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing Mariadb: Dockerfile for building Mariadb images
+#
+FROM csphere/centos:7.1  # 从哪个镜像构建
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com>
+
+ENV DATA_DIR /var/lib/mysql  # 环境变量
+
+# Install Mariadb
+RUN yum install -y mariadb mariadb-server && \
+    yum clean all
+
+ADD mysqld_charset.cnf /etc/my.cnf.d/
+
+COPY scripts /scripts   # 从本地复制文件
+RUN chmod +x /scripts/start # 加执行权限
+
+EXPOSE 3306  # 暴露端口
+
+VOLUME ["/var/lib/mysql"]   # 防止容器删除后，数据一并删除,(相当于将宿主机的目录，映射到容器里，删除了容器，数据目录还在
+
+ENTRYPOINT ["/scripts/start"]  # 启动脚本
+
+#################
+#  脚本内容
+pwd
+/root/docker-training/mysql/scripts
+ls
+firstrun  firstrun_maria  start
+
+cat start 
+#!/bin/bash
+
+set -e # 当执行一条命令错误的时候，不会再往下执行，直接退出
+
+#
+# When Startup Container script
+#
+
+if [[ -e /scripts/firstrun ]]; then
+    # config mariadb
+    /scripts/firstrun_maria
+    rm /scripts/firstrun
+else
+    # Cleanup previous mariadb sockets
+    if [[ -e ${DATA_DIR}/mysql.sock ]]; then
+        rm -f ${DATA_DIR}/mysql.sock
+    fi
+fi
+
+exec /usr/bin/mysqld_safe   # 通过exec启动mysql
+
+
+
+cat firstrun_maria 
+#!/bin/bash
+# 定义了两个变量用户名密码
+# 初始化操作
+
+DB_USER=${DB_USER:-admin}
+DB_PASS=${DB_PASS:-csphere2015}
+
+MARIADB_NEW=true
+
+#
+#  MariaDB setup
+#
+firstrun_maria() {
+
+    # First install mariadb
+    if [[ ! -d ${DATA_DIR}/mysql ]]; then
+        echo "===> MariaDB not install..."
+
+        echo "===> Initializing maria database... "
+        mysql_install_db --user=mysql --ldata=${DATA_DIR}
+        echo "===> System databases initialized..."
+
+        # Start mariadb
+        /usr/bin/mysqld_safe --user mysql > /dev/null 2>&1 &
+
+        echo "===> Waiting for MariaDB to start..."
+
+        STA=1
+        while [[ STA -ne 0 ]]; do
+            printf "."
+            sleep 5
+            mysql -uroot -e "status" > /dev/null 2>&1
+            STA=$?
+        done
+        echo "===> Start OK..."
+
+        # 1. Create a localhost-only admin account
+        mysql -u root -e "CREATE USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS'"
+        mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS'"
+        mysql -u root -e "CREATE USER '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$DB_PASS'"
+        mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO '$DB_USER'@'%' WITH GRANT OPTION"
+        echo "===> Create localhost completed..."
+
+        # shutdown mariadb to wait for supervisor
+        mysqladmin -u root shutdown
+
+    else
+        if [[ -e ${DATA_DIR}/mysql.sock ]]; then
+            rm -f ${DATA_DIR}/mysql.sock
+        fi
+
+        MARIADB_NEW=false
+
+        echo "===> Using an existing volume of MariaDB"
+    fi
+}
+
+firstrun_maria
+
+
+##############
+# 构建镜像
+docker build -t csphere/mysql:5.5 .
+Successfully built ad4c32c591e1
+
+# 查看生成的镜像
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED              SIZE
+csphere/mysql       5.5                 ad4c32c591e1        About a minute ago   725.1 MB
+csphere/php-fpm     5.4                 f1fdd907b89d        50 minutes ago       685.5 MB
+csphere/centos      7.1                 b459c3d36f07        7 hours ago          591.4 MB
+centos              centos7.1.1503      285396d0a019        2 weeks ago          212.1 MB
+
+# 启动容器
+docker run -d -p 3306:3306 --name dbserver csphere/mysql:5.5
+f15b24046a658164c5aec5cebeedb80110aff08034ff3a02bc5240b108bace5c
+# 状态
+docker ps -a
+CONTAINER ID        IMAGE                 COMMAND                  CREATED             STATUS                    PORTS                                   NAMES
+f15b24046a65        csphere/mysql:5.5     "/scripts/start"         29 seconds ago      Up 28 seconds             22/tcp, 0.0.0.0:3306->3306/tcp          dbserver
+
+# 进入交互式模式
+docker exec -it dbserver '/bin/bash'
+[root@f15b24046a65 /]# 
+
+[root@f15b24046a65 /]# mysql
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+Your MariaDB connection id is 1
+Server version: 5.5.50-MariaDB MariaDB Server
+
+Copyright (c) 2000, 2016, Oracle, MariaDB Corporation Ab and others.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+MariaDB [(none)]> USE test; 
+Database changed
+MariaDB [test]> SELECT VERSION();
++----------------+
+| VERSION()      |
++----------------+
+| 5.5.50-MariaDB |
++----------------+
+1 row in set (0.00 sec)
+
+# 退出
+[root@f15b24046a65 /]# exit
+
+ # 因为启动的时候没有挂载卷,现将数据库容器删除
+docker rm dbserver     # 此命令只能删除一个exist状态的容器，正在运行的容器无法删除
+docker rm -f dbserver  # 强制删除 
+dbserver
+
+# 加上-v
+# 用法 冒号前边是宿主机目录，后边是映射到容器的目录
+# docker run -d -p 3306:3306 -v host_dir:container_dir ...
+docker run -d -p 3306:3306 -v /var/lib/docker/vfs/dir/mydata:/var/lib/mysql csphere/mysql:5.5
+6740e22014bc6420a9df2b01e6ce13359b6871e90baee94e1530f8c851ac273c
+
+docker ps -a
+CONTAINER ID        IMAGE                 COMMAND                  CREATED              STATUS                    PORTS                                   NAMES
+6740e22014bc        csphere/mysql:5.5     "/scripts/start"         About a minute ago   Up About a minute         22/tcp, 0.0.0.0:3306->3306/tcp          compassionate_euler
+
+# 连接到容器里
+docker exec -it 6740e  /bin/bash
+
+# 验证容器和宿主机数据同步
+docker exec -it 6740e  /bin/bash
+[root@6740e22014bc /]# mysql
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+Your MariaDB connection id is 1
+Server version: 5.5.50-MariaDB MariaDB Server
+
+Copyright (c) 2000, 2016, Oracle, MariaDB Corporation Ab and others.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+MariaDB [(none)]> SHOW DATABASES;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mysql              |
+| performance_schema |
+| test               |
++--------------------+
+4 rows in set (0.00 sec)
+
+MariaDB [(none)]> CREATE DATABASE mydb;
+Query OK, 1 row affected (0.00 sec)
+
+MariaDB [(none)]> SHOW DATABASES;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mydb               |
+| mysql              |
+| performance_schema |
+| test               |
++--------------------+
+5 rows in set (0.00 sec)
+MariaDB [(none)]> Bye
+[root@6740e22014bc /]# exit
+exit
+
+ls /var/lib/docker/vfs/dir/mydata/  # mydb已经存在
+1.000001  1.000003  1.index            aria_log_control  ib_logfile0  mydb   mysql.sock          test
+1.000002  1.000004  aria_log.00000001  ibdata1           ib_logfile1  mysql  performance_schema
+
+# 停止容器，验证宿主机数据目录没被删除
+docker stop 6740
+6740
+docker ps -a 
+CONTAINER ID        IMAGE                 COMMAND                  CREATED             STATUS                        PORTS                                   NAMES
+6740e22014bc        csphere/mysql:5.5     "/scripts/start"         10 minutes ago      Exited (137) 35 seconds ago                                           compassionate_euler
+# 删除容器
+docker rm 6740
+6740
+# 目录、数据还存在
+ls /var/lib/docker/vfs/dir/mydata/
+1.000001  1.000003  1.index            aria_log_control  ib_logfile0  mydb   mysql.sock          test
+1.000002  1.000004  aria_log.00000001  ibdata1           ib_logfile1  mysql  performance_schema
+
+# 目前数据目录已经有文件，创建一个新的db容器时，使用现有的数据目录，而不是重新生成
+docker run -d -p 3306:3306 --name newdb -v /var/lib/docker/vfs/dir/mydata:/var/lib/mysql csphere/mysql:5.5
+d9cda723662a70203d34da1b9c2f7a3ef247447b1a3895066dc349ed649f012b
+# 容器已经启动成功
+docker ps -a
+CONTAINER ID        IMAGE                 COMMAND                  CREATED             STATUS                    PORTS                                   NAMES
+d9cda723662a        csphere/mysql:5.5     "/scripts/start"         39 seconds ago      Up 38 seconds             22/tcp, 0.0.0.0:3306->3306/tcp          newdb
+# 验证数据是否一致
+# mydb数据没有随着mysql容器被删除而删除
+[root@d9cda723662a /]# mysql -e 'SHOW DATABASES;'
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mydb               |
+| mysql              |
+| performance_schema |
+| test               |
++--------------------+
+
+
+# 构建mysql镜像 End
+
+#######################
+# WordPress
+# 构建一个动态网站 Start
+ pwd
+/root/docker-training/wordpress
+ls    # *php相当于代码文件,如果公司已经使用了docker，将dockerfile放在目录数据下，方便测试
+Dockerfile  license.txt      wp-admin              wp-config-sample.php  wp-includes        wp-login.php     wp-signup.php
+index.php   readme.html      wp-blog-header.php    wp-content            wp-links-opml.php  wp-mail.php      wp-trackback.php
+init.sh     wp-activate.php  wp-comments-post.php  wp-cron.php           wp-load.php        wp-settings.php  xmlrpc.php
+
+cat Dockerfile 
+from csphere/php-fpm:5.4 # 基于此镜像构建
+
+add init.sh /init.sh
+
+entrypoint ["/init.sh", "/usr/bin/supervisord", "-n", "-c", "/etc/supervisord.conf"]
+# 在php-fpm中 ONBUILD指令会在此文件生效 
+# entrypoin   执行 /init.sh 指令后， 接着执行之后的指令
+
+ls -a
+.           .dockerignore  license.txt      wp-admin              wp-config-sample.php  wp-includes        wp-login.php     wp-signup.php
+..          index.php      readme.html      wp-blog-header.php    wp-content            wp-links-opml.php  wp-mail.php      wp-trackback.php
+Dockerfile  init.sh        wp-activate.php  wp-comments-post.php  wp-cron.php           wp-load.php        wp-settings.php  xmlrpc.php
+
+cat .dockerignore  # 除了此文件(Dockerfile)不进行拷贝，其他全部拷贝/app目录下
+Dockerfile
+
+cat init.sh 
+#!/bin/bash
+set -e
+
+cd /app
+
+if [ -n "$MYSQL_PORT_3306_TCP" ]; then
+    if [ -z "$WORDPRESS_DB_HOST" ]; then
+        WORDPRESS_DB_HOST='mysql'
+    else
+        echo >&2 'warning: both WORDPRESS_DB_HOST and MYSQL_PORT_3306_TCP found'
+        echo >&2 "  Connecting to WORDPRESS_DB_HOST ($WORDPRESS_DB_HOST)"
+        echo >&2 '  instead of the linked mysql container'
+    fi
+fi
+
+if [ -z "$WORDPRESS_DB_HOST" ]; then
+    echo >&2 'error: missing WORDPRESS_DB_HOST and MYSQL_PORT_3306_TCP environment variables'
+    echo >&2 '  Did you forget to --link some_mysql_container:mysql or set an external db'
+    echo >&2 '  with -e WORDPRESS_DB_HOST=hostname:port?'
+    exit 1
+fi
+
+# if we're linked to MySQL, and we're using the root user, and our linked
+# container has a default "root" password set up and passed through... :)
+: ${WORDPRESS_DB_USER:=root}
+if [ "$WORDPRESS_DB_USER" = 'root' ]; then
+    : ${WORDPRESS_DB_PASSWORD:=$MYSQL_ENV_MYSQL_ROOT_PASSWORD}
+fi
+: ${WORDPRESS_DB_NAME:=wordpress}
+
+if [ -z "$WORDPRESS_DB_PASSWORD" ]; then
+    echo >&2 'error: missing required WORDPRESS_DB_PASSWORD environment variable'
+    echo >&2 '  Did you forget to -e WORDPRESS_DB_PASSWORD=... ?'
+    echo >&2
+    echo >&2 '  (Also of interest might be WORDPRESS_DB_USER and WORDPRESS_DB_NAME.)'
+    exit 1
+fi
+
+if ! [ -e index.php -a -e wp-includes/version.php ]; then
+    echo >&2 "WordPress not found in $(pwd) - copying now..."
+    if [ "$(ls -A)" ]; then
+        echo >&2 "WARNING: $(pwd) is not empty - press Ctrl+C now if this is an error!"
+        ( set -x; ls -A; sleep 10 )
+    fi
+    tar cf - --one-file-system -C /usr/src/wordpress . | tar xf -
+    echo >&2 "Complete! WordPress has been successfully copied to $(pwd)"
+    if [ ! -e .htaccess ]; then
+        # NOTE: The "Indexes" option is disabled in the php:apache base image
+        cat > .htaccess <<-'EOF'
+            # BEGIN WordPress
+            <IfModule mod_rewrite.c>
+            RewriteEngine On
+            RewriteBase /
+            RewriteRule ^index\.php$ - [L]
+            RewriteCond %{REQUEST_FILENAME} !-f
+            RewriteCond %{REQUEST_FILENAME} !-d
+            RewriteRule . /index.php [L]
+            </IfModule>
+            # END WordPress
+        EOF
+        chown nginx:nginx .htaccess
+    fi
+fi
+
+# TODO handle WordPress upgrades magically in the same way, but only if wp-includes/version.php's $wp_version is less than /usr/src/wordpress/wp-includes/version.php's $wp_version
+
+if [ ! -e wp-config.php ]; then
+    awk '/^\/\*.*stop editing.*\*\/$/ && c == 0 { c = 1; system("cat") } { print }' wp-config-sample.php > wp-config.php <<'EOPHP'
+// If we're behind a proxy server and using HTTPS, we need to alert Wordpress of that fact
+// see also http://codex.wordpress.org/Administration_Over_SSL#Using_a_Reverse_Proxy
+if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+    $_SERVER['HTTPS'] = 'on';
+}
+EOPHP
+    chown nginx:nginx wp-config.php
+fi
+
+set_config() {
+    key="$1"
+    value="$2"
+    php_escaped_value="$(php -r 'var_export($argv[1]);' "$value")"
+    sed_escaped_value="$(echo "$php_escaped_value" | sed 's/[\/&]/\\&/g')"
+    sed -ri "s/((['\"])$key\2\s*,\s*)(['\"]).*\3/\1$sed_escaped_value/" wp-config.php
+}
+
+set_config 'DB_HOST' "$WORDPRESS_DB_HOST"
+set_config 'DB_USER' "$WORDPRESS_DB_USER"
+set_config 'DB_PASSWORD' "$WORDPRESS_DB_PASSWORD"
+set_config 'DB_NAME' "$WORDPRESS_DB_NAME"
+
+# allow any of these "Authentication Unique Keys and Salts." to be specified via
+# environment variables with a "WORDPRESS_" prefix (ie, "WORDPRESS_AUTH_KEY")
+UNIQUES=(
+    AUTH_KEY
+    SECURE_AUTH_KEY
+    LOGGED_IN_KEY
+    NONCE_KEY
+    AUTH_SALT
+    SECURE_AUTH_SALT
+    LOGGED_IN_SALT
+    NONCE_SALT
+)
+for unique in "${UNIQUES[@]}"; do
+    eval unique_value=\$WORDPRESS_$unique
+    if [ "$unique_value" ]; then
+        set_config "$unique" "$unique_value"
+    else
+        # if not specified, let's generate a random value
+        current_set="$(sed -rn "s/define\((([\'\"])$unique\2\s*,\s*)(['\"])(.*)\3\);/\4/p" wp-config.php)"
+        if [ "$current_set" = 'put your unique phrase here' ]; then
+            set_config "$unique" "$(head -c1M /dev/urandom | sha1sum | cut -d' ' -f1)"
+        fi
+    fi
+done
+
+TERM=dumb php -- "$WORDPRESS_DB_HOST" "$WORDPRESS_DB_USER" "$WORDPRESS_DB_PASSWORD" "$WORDPRESS_DB_NAME" <<'EOPHP'
+<?php
+// database might not exist, so let's try creating it (just to be safe)
+$stderr = fopen('php://stderr', 'w');
+list($host, $port) = explode(':', $argv[1], 2);
+$maxTries = 10;
+do {
+    $mysql = new mysqli($host, $argv[2], $argv[3], '', (int)$port);
+    if ($mysql->connect_error) {
+        fwrite($stderr, "\n" . 'MySQL Connection Error: (' . $mysql->connect_errno . ') ' . $mysql->connect_error . "\n");
+        --$maxTries;
+        if ($maxTries <= 0) {
+            exit(1);
+        }
+        sleep(3);
+    }
+} while ($mysql->connect_error);
+if (!$mysql->query('CREATE DATABASE IF NOT EXISTS `' . $mysql->real_escape_string($argv[4]) . '`')) {
+    fwrite($stderr, "\n" . 'MySQL "CREATE DATABASE" Error: ' . $mysql->error . "\n");
+    $mysql->close();
+    exit(1);
+}
+$mysql->close();
+EOPHP
+
+exec "$@"
+
+
+# 构建一个镜像
+docker build -t csphere/wordpress:4.2 /root/docker-training/wordpress/
+Sending build context to Docker daemon  19.8 MB
+Step 1 : FROM csphere/php-fpm:5.4
+# Executing 2 build triggers...    -->触发了两个triggers
+Step 1 : ADD . /app
+Step 1 : RUN chown -R nginx:nginx /app
+ ---> Running in 68524dcd9cf5
+ ---> 2632fb8d6888
+Removing intermediate container 40cf624534a8
+Removing intermediate container 68524dcd9cf5
+Step 2 : ADD init.sh /init.sh
+ ---> cb0e7c953b57
+Removing intermediate container 94cfb272a57d
+Step 3 : ENTRYPOINT /init.sh /usr/bin/supervisord -n -c /etc/supervisord.conf
+ ---> Running in 2aaf29bcf6b5
+ ---> 2dc1403976dc
+Removing intermediate container 2aaf29bcf6b5
+Successfully built 2dc1403976dc
+
+# 查看镜像
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED              SIZE
+csphere/wordpress   4.2                 2dc1403976dc        About a minute ago   723.1 MB
+
+# 内网地址
+ip a l eth0
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:16:3e:03:78:21 brd ff:ff:ff:ff:ff:ff
+    inet 10.173.39.46/21 brd 10.173.39.255 scope global eth0
+       valid_lft forever preferred_lft forever
+# 运行容器  -p -e 可以有多个
+docker run -d -p 80:80 --name wordpress -e WORDPRESS_DB_HOST=10.173.39.46 -e WORDPRESS_DB_USER=admin -e WORDPRESS_DB_PASSWORD=csphere2015 csphere/wordpress:4.2 
+6db3c64d2bdc6c11e484ce0e4395014c0a7c83abc87a941fc59930eb46f96d6d
+
+# 容器成功启动
+ocker ps -a
+CONTAINER ID        IMAGE                   COMMAND                  CREATED             STATUS                    PORTS                                   NAMES
+6db3c64d2bdc        csphere/wordpress:4.2   "/init.sh /usr/bin/su"   48 seconds ago      Up 47 seconds             22/tcp, 443/tcp, 0.0.0.0:80->80/tcp     wordpress
+
+# 附件有图文显示
+
+# 构建一个动态网站 End
+
+
+
+###############################
+# entrypoint 和 CMD 区别
+entrypoint 
+entrypoint 只有最后一条生效，如果写了多行 entrypoint的情况下(运行一个docker容器就像运行一个程序一样)
+# 两种写法
+1. 数组形式
+ENTRYPOINT ["executable","param1","param2"]  # (建议使用此形式，进程启动起来pid就是1)
+2. 
+ENTRYPOINT command1 param1 param2 (shell from) # (pid就是执行完shell的pid号)
+docker run -it -entrypoint=覆盖Dockerfile ENTRYPOINT[]
+
+CMD
+1. 数组形式
+CMD ["executable","param1","param2"] (exec from,this is the preferred from)
+2. 
+CMD ["param1", "param2"] (as default parameters to ENTRYPOINT)
+3. 
+CMD  command param1 param2 (shell from)
+第三种方法(shell from): 是以 '/bin/sh -c '的方法执行的命令
+例子：
+CMD ["/bin/echo","this is CMD"]
+docker run -it -rm csphere/cmd:0.1 /bin/bash
+
+
+######
+构建一个 Dockerfile 验证CMD
+
+1.
+vim Dockerfile
+FROM centos:centos7.1.1503
+
+CMD ["/bin/echo","this is a test cmd"]
+2.
+docker build -t zrdcentos/cmd:0.1 .
+Sending build context to Docker daemon 183.1 MB
+Step 1 : FROM centos:centos7.1.1503
+ ---> 285396d0a019
+Step 2 : CMD /bin/echo this is a test cmd
+ ---> Running in b94d718d70c7
+ ---> f76d8da65c54
+Removing intermediate container b94d718d70c7
+Successfully built f76d8da65c54
+3.
+#  通过zrdcentos/cmd:0.1镜像来启动一个容器
+
+docker run -it zrdcentos/cmd:0.1
+this is a test cmd
+
+docker run -it zrdcentos/cmd:0.1 /bin/bash # 连接到容器里
+
+#############################
+# 构建一个 Dockerfile 验证ENTRYPOINT
+vim Dockerfile 
+
+FROM centos:centos7.1.1503
+
+ENTRYPOINT ["/bin/echo","this is a test entrypoint"]
+
+1.
+docker build -t zrdcentos/ent:0.1 .
+Sending build context to Docker daemon 183.1 MB
+Step 1 : FROM centos:centos7.1.1503
+ ---> 285396d0a019
+Step 2 : ENTRYPOINT /bin/echo this is a test entrypoint
+ ---> Running in 47c9c3da0f07
+ ---> f3ba2d31f37f
+Removing intermediate container 47c9c3da0f07
+Successfully built f3ba2d31f37f
+2. 
+docker run -it zrdcentos/ent:0.1
+this is a test entrypoint
+
+3.
+docker run -it zrdcentos/ent:0.1 /bin/bash  # 上边例子(CMD)的echo 被替换成/bin/bash，而entrypoint不能将/bin/echo替换
+this is a test entrypoint /bin/bash
+
+# entrypoint不可能替换掉
+docker run -it --entrypoint=/bin/bash   # 来覆盖掉Dockerfile里边的entrypoint的指定/bin/echo指令
+[root@d08116f6a934 /]# 
+
+
+
+
+# =================================================================================================================================================
+第二课 
+
+一、构建registry私有镜像
+
+docker run -d -p 5000:22 --name registry centos:centos7.1.1503
+docker ps -a
+CONTAINER ID        IMAGE                   COMMAND                  CREATED              STATUS                          PORTS                                   NAMES
+dc552ce93b7e        centos:centos7.1.1503   "/bin/bash"              About a minute ago   Exited (0) About a minute ago                                           registry
+
+#######################################
+# 通常registry有4部分组成
+# url：本地的ip地址加上端口号就是url
+# csphere: 目录
+# csphere: 镜像名字
+# 1.0：版本号
+registry registry_url/csphere/csphere:0.11.2
+
+# 将容器打包上传
+# 打包前
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+csphere/wordpress   4.2                 2dc1403976dc        6 hours ago         723.1 MB
+csphere/mysql       5.5                 ad4c32c591e1        7 hours ago         725.1 MB
+csphere/php-fpm     5.4                 f1fdd907b89d        8 hours ago         685.5 MB
+csphere/centos      7.1                 b459c3d36f07        15 hours ago        591.4 MB
+centos              centos7.1.1503      285396d0a019        2 weeks ago         212.1 MB
+
+# 打标签
+# csphere/mysql:5.5(当前标签)
+# 10.173.39.46:5000/csphere/mysql:5.5(打成的新标签)
+docker tag csphere/mysql:5.5  10.173.39.46:5000/csphere/mysql:5.5
+# 发现mysql已经被修改成新的标签
+docker images
+REPOSITORY                        TAG                 IMAGE ID            CREATED             SIZE
+csphere/wordpress                 4.2                 2dc1403976dc        6 hours ago         723.1 MB
+10.173.39.46:5000/csphere/mysql   5.5                 ad4c32c591e1        8 hours ago         725.1 MB
+csphere/mysql                     5.5                 ad4c32c591e1        8 hours ago         725.1 MB
+csphere/php-fpm                   5.4                 f1fdd907b89d        8 hours ago         685.5 MB
+csphere/centos                    7.1                 b459c3d36f07        16 hours ago        591.4 MB
+centos                            centos7.1.1503      285396d0a019        2 weeks ago         212.1 MB
+
+#####################################
+# 使用阿里云的内网
+# 1、查看现有镜像
+docker images
+REPOSITORY                        TAG                 IMAGE ID            CREATED             SIZE
+csphere/wordpress                 4.2                 2dc1403976dc        6 hours ago         723.1 MB
+10.173.39.46:5000/csphere/mysql   5.5                 ad4c32c591e1        8 hours ago         725.1 MB
+csphere/mysql                     5.5                 ad4c32c591e1        8 hours ago         725.1 MB
+csphere/php-fpm                   5.4                 f1fdd907b89d        8 hours ago         685.5 MB
+csphere/centos                    7.1                 b459c3d36f07        16 hours ago        591.4 MB
+centos                            centos7.1.1503      285396d0a019        2 weeks ago         212.1 MB
+
+# 2、登入
+docker login --username=cucyzrd registry-internal.cn-hangzhou.aliyuncs.com
+Password: 
+Login Succeeded
+
+
+# 3、打标签
+docker tag 10.173.39.46:5000/csphere/mysql:5.5 registry-internal.cn-hangzhou.aliyuncs.com/csphere/centos:7.1
+
+# 4、上传镜像
+docker push registry-internal.cn-hangzhou.aliyuncs.com/csphere/centos:7.1
+The push refers to a repository [registry-internal.cn-hangzhou.aliyuncs.com/csphere/centos]
+12fc5bd55e96: Pushed 
+cf7d391ef5e2: Pushed 
+c76327faac14: Pushed 
+0e02019ec09a: Pushed 
+31b1f4757cca: Pushed 
+f0cdf637f2e1: Pushed 
+ae5ca0c81e9e: Pushed 
+4ae6b2cb930e: Pushed 
+befbc0f2e60d: Pushed 
+ef884ade28d6: Pushed 
+7.1: digest: sha256:2dad077aac1104e0638c23ad4baed607457dc096a6344b8efc3e4b3b09fc0090 size: 2407
+
+######################
+二、多个容器同时启动
+pip3 install docker-compose
+
+https://git.oschina.net/cucy/second.git
+cd second
+
+ls
+centos7  docker-compose.yml  hello  jdk  jenkins  jre  maven  mysql  README.md  tomcat
+
+
+cat docker-compose.yml 
+mysql:
+   image: csphere/mysql:5.5  #  通过哪个镜像创建容器
+   ports: 
+     - "3306:3306"   # 端口映射 
+   volumes:
+     - /var/lib/docker/vfs/dir/dataxc:/var/lib/mysql  # 宿主机目录映射到容器里
+   hostname: mydb.server.com
+
+tomcat:
+   image: csphere/tomcat:7.0.55
+   ports:
+      - "8080:8080"
+   links:
+      - mysql:db  # 别名，可以调用mysql容器里边的变量
+   environment:
+      - TOMCAT_USER=admin   # 环境变量
+      - TOMCAT_PASS=admin
+   hostname: tomcat.server.com
+
+# 启动容器
+# docker-compose 会以当前目录 yml里设置的名字结合_1
+docker-compose up -d
+Creating second_mysql_1
+Creating second_tomcat_1
+# 停止容器
+docker-compose stop
+Stopping second_tomcat_1 ... done
+Stopping second_mysql_1 ... done
+# 查看信息
+docker-compose ps
+     Name             Command        State     Ports 
+----------------------------------------------------
+second_mysql_1    /scripts/start    Exit 137         
+second_tomcat_1   catalina.sh run   Exit 143   
+
+# 删除容器
+docker-compose rm
+Going to remove second_tomcat_1, second_mysql_1
+Are you sure? [yN] y
+Removing second_tomcat_1 ... done
+Removing second_mysql_1 ... done
+
+docker-compose ps
+Name   Command   State   Ports 
+------------------------------
+
+三、通过git仓库自动构建镜像
+
+# 1、安装maven构建工具
+mkdir maven-tar
+cp apache-maven-3.3.9-bin.tar.gz maven-tar/
+
+cat ~/second/maven/Dockerfile 
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing maven: Dockerfile for building maven images
+#
+FROM       csphere/jdk:1.7.0
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com>
+
+ENV MAVEN_VERSION 3.3.9
+ENV MAVEN_HOME /opt/maven
+
+# Install maven 从网路下载
+# ADD http://mirror.cc.columbia.edu/pub/software/apache/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz /opt/
+
+# 从本地直接添加
+COPY apache-maven-3.3.9-bin.tar.gz /opt/
+
+# 从宿主机拷贝文件--> 解压 --> 构建
+RUN tar xzf /opt/apache-maven-3.3.9-bin.tar.gz -C /opt && \
+    mv /opt/apache-maven-${MAVEN_VERSION} /opt/maven  && \
+    ln -s /opt/maven/bin/mvn /usr/bin/mvn
+
+COPY settings.xml /opt/maven/conf/settings.xml
+
+# 构建一个hello的项目()
+ADD hello /hello
+RUN cd /hello && \
+    mvn clean install -Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true
+    # 添加代理服务器国外过慢
+
+
+# 改掉标签
+docker pull registry.cn-hangzhou.aliyuncs.com/devops/jdk:7u80
+docker tag  registry.cn-hangzhou.aliyuncs.com/devops/jdk:7u80 csphere/jdk:1.7.0
+docker rmi -f registry.cn-hangzhou.aliyuncs.com/devops/jdk:7u80 # 删除没用镜像
+
+# 下载Jenkins镜像
+docker pull jenkins:1.642.1  # 从里边拷贝出war文件到宿主机(下载过慢)
+docker build -t csphere/jenkins:1.609 .
+# 启动容器
+docker run -d -p 8080:8080 --name jenkins -v /usr/bin/docker/:/usr/bin/docker -v /var/run/docker.sock:/var/run/docker.sock -v /root/maven-tar:/root csphere/jenkins:1.609
+
+
+
+########################################################3333
+四、hello项目
+/root/second/maven
+ls
+apache-maven-3.3.9-bin.tar.gz  Dockerfile  hello  settings.xml
+
+1. 构建docker镜像
+docker build -t csphere/maven:3.3.3 .
+docker images
+REPOSITORY                                          TAG                 IMAGE ID            CREATED             SIZE
+csphere/maven                                       3.3.3               93e067fe1ec8        19 minutes ago      884.2 MB
+
+2. 创建容器
+docker create  --name maven csphere/maven:3.3.3
+b6d13dbd22c1435dbedeb6e28fbf707160ee481e645cc7153f7eb7bac0e5b930
+
+docker ps -a
+CONTAINER ID        IMAGE                   COMMAND                  CREATED             STATUS                      PORTS                               NAMES
+b6d13dbd22c1        csphere/maven:3.3.3     "/usr/bin/supervisord"   29 seconds ago      Created                                                         maven
+发现无状态，没有端口；只有容器的ID号通过哪个镜像创建，最后执行的命令
+
+
+cd 、../hello/
+ pwd
+/root/second/hello
+ls -l
+total 8
+-rw-r--r-- 1 root root 292 Sep 15 22:56 Dockerfile
+-rwxr-xr-x 1 root root 523 Sep 15 22:56 init
+
+cat Dockerfile
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing HelloWorld: Dockerfile for building HelloWorld images
+#
+FROM       csphere/tomcat:7.0.55
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com>
+
+ADD init /init
+
+ENTRYPOINT ["/init", "/scripts/run"]
+
+
+
+# 把构建好的war包拷贝出来
+docker cp maven:/hello/target/hello.war .
+ls -lh
+total 3.6M
+-rw-r--r-- 1 root root  292 Sep 15 22:56 Dockerfile
+-rw-r--r-- 1 root root 3.6M Sep 16 18:52 hello.war
+-rwxr-xr-x 1 root root  523 Sep 15 22:56 init
+# 构建hello项目镜像
+pwd
+/root/second/hello
+docker build -t csphere/hello:1.0 .
+# 此程序需要db容器，需要构建一个db
+docker run -d -p 3306:3306 --name mysql csphere/mysql:5.5
+e46fdfa7f4f22b24149cc67a93e8d05c4794bf1b84a7170b503e1e99df84403d
+
+# 查看状态
+docker ps 
+CONTAINER ID        IMAGE                   COMMAND                  CREATED             STATUS              PORTS                               NAMES
+e46fdfa7f4f2        csphere/mysql:5.5       "/scripts/start"         33 seconds ago      Up 31 seconds       22/tcp, 0.0.0.0:3306->3306/tcp      mysql
+8059a33c6f0c        csphere/jenkins:1.609   "/bin/tini -- /usr/lo"   2 hours ago         Up 2 hours          0.0.0.0:8080->8080/tcp, 50000/tcp   jenkins
+
+# 运行hello项目容器
+cat init 
+#!/bin/bash
+
+set -e
+
+DB_HOST=${DB_HOST:-10.173.39.46}
+DB_USER=${DB_USER:-admin}
+DB_PASS=${DB_PASS:-csphere2015}
+
+if ! mysql -u${DB_USER} -p${DB_PASS} -h ${DB_HOST} -e "show databases;" | grep -w xc; then
+  mysql -u${DB_USER} -p${DB_PASS} -h ${DB_HOST} -e "create database if not exists xc;"
+  mysql -u${DB_USER} -p${DB_PASS} -h ${DB_HOST} xc -e "create table if not exists user(id int(4),name char(20));"
+  mysql -u${DB_USER} -p${DB_PASS} -h ${DB_HOST} xc -e "insert into user(id,name) values('1','csphere');"
+fi
+
+exec "$@"
+
+docker run -d -p 80:8080 --name hello csphere/hello:1.0 
+
+# 查看运行起来的hello容器
+docker ps
+CONTAINER ID        IMAGE                   COMMAND                  CREATED             STATUS              PORTS                                    NAMES
+687cc8422e80        csphere/hello:1.0       "/init /scripts/run"     35 seconds ago      Up 33 seconds       22/tcp, 8443/tcp, 0.0.0.0:80->8080/tcp   hello
+e46fdfa7f4f2        csphere/mysql:5.5       "/scripts/start"         9 minutes ago       Up 9 minutes        22/tcp, 0.0.0.0:3306->3306/tcp           mysql
+8059a33c6f0c        csphere/jenkins:1.609   "/bin/tini -- /usr/lo"   2 hours ago         Up 2 hours          0.0.0.0:8080->8080/tcp, 50000/tcp        jenkins
+# 查看状态
+curl -I http://123.56.72.160/
+HTTP/1.1 200 OK
+Server: Apache-Coyote/1.1
+Content-Type: text/html;charset=ISO-8859-1
+Transfer-Encoding: chunked
+Date: Fri, 16 Sep 2016 13:09:05 GMT
+
+
+
+
+=============================================================
+五、Jenkins自动拉取代码，自动构建容器，自动上线(java-app)
+
+一、
+在Jenkins新建项目，使用webhook钩子函数触发
+
+二、
+在git里设置webhook
+http://123.56.72.160:8080/job/java-app/build?token=java-token
+
+三、
+增加构建步骤添加registry私有仓库地址
+思路： 定义 registry地址，拷贝出构建好的项目文件，删除旧的项目镜像，重新构建新的镜像，从容器里拷贝出文件
+REGISTRY_URL=registry-internal.cn-hangzhou.aliyuncs.com/csphere/hello
+cp /root/apache-maven-3.3.9-bin.tar.gz   $WORKSPACE/maven  # 基于maven工作目录进行构建镜像(构建项目代码所需要的tar包，放到对应目录里)
+docker build -t registry-internal.cn-hangzhou.aliyuncs.com/csphere/maven $WORKSPACE/maven # maver docker镜像
+if docker ps -a | grep -i maven ; then  如果存在就将其删除，将要创建新的maven镜像
+    docker rm -f maven
+fi
+docker creat --name maven csphere/maven:3.3.3 # 构建新的镜像(maven镜像)
+docker cp maven:/hello/target/hello.war   $WORKSPACE/hello  从maven镜像中拷贝出(代码文件)来放到工作(tomcat)目录中
+docker build -t $REGISTRY_URL:1.0 $WORKSPACE/hello  # 构建镜像
+docker push $REGISTRY_URL:1.0   # 推送镜像到私有仓库中
+if docker ps -a | grep -i hello; then  # 判断旧的容器是否存在
+    docker rm -f hello 
+fi
+docker run -d -p 80:8080 --name hello $REGISTRY_URL:1.0 # 新的镜像运行容器
+
+
+<------------------------------------------------->
+REGISTRY_URL=registry-internal.cn-hangzhou.aliyuncs.com/csphere/hello
+cp /root/apache-maven-3.3.9-bin.tar.gz   $WORKSPACE/maven
+docker build -t registry-internal.cn-hangzhou.aliyuncs.com/csphere/maven $WORKSPACE/maven
+if docker ps -a | grep -i maven ; then
+    docker rm -f maven
+fi
+docker creat --name maven csphere/maven:3.3.3
+docker cp maven:/hello/target/hello.war   $WORKSPACE/hello
+docker build -t $REGISTRY_URL:1.0 $WORKSPACE/hello
+docker push $REGISTRY_URL:1.0
+if docker ps -a | grep -i hello; then
+    docker rm -f hello 
+fi
+docker run -d -p 80:8080 --name hello $REGISTRY_URL:1.0
+<------------------------------------------------->
+
+http://admin:063487d390c17cbab60c33ab88a72d3e123.56.72.160:8080/job/java-app/build?token=java-token
+
+
+# 修改项目代码测试
+pwd
+/root/second
+
+vim maven/hello/src/main/webapp/index.jsp 
+
+<%@page import="csphere.xc.dao.user_select"%>
+<%@ page language="java" contentType="text/html; charset=UTF-8"
+    pageEncoding="UTF-8"%>
+<%
+user_select select = new user_select();
+String name1 = select.select();
+request.setAttribute("name", name1);
+%>
+<html>
+<body>
+<h1>thie line is test for jenkins!!</h1>
+<h2>Hello <%=name1 %> !</h2>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+==============================================
+第四课、
+docker网络模式
+1、nat (docker 默认网络模式)
+网络地址转换()
+docker 会自动生成veth网卡
+
+例子1
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+busybox             latest              2b8fd9751c4c        12 weeks ago        1.093 MB
+
+# 启动一个不带端口容器
+docker run -it --name csphere-nat busybox sh
+/ # 
+# 查看网络信息
+/ # ip addr list eth0
+9: eth0@if10: <BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN> mtu 1500 qdisc noqueue 
+    link/ether 02:42:c0:a8:00:02 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.0.2/20 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:c0ff:fea8:2/64 scope link 
+       valid_lft forever preferred_lft forever
+/ # route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.0.1     0.0.0.0         UG    0      0        0 eth0
+192.168.0.0     0.0.0.0         255.255.240.0   U     0      0        0 eth0
+/ # wget baidu.com
+Connecting to baidu.com (220.181.57.217:80)
+index.html           100% |**********************************************************************************************************************|    81   0:00:00 ETA
+(证明可以访问外网)
+
+ctrl p - q  + enter回车退出当前界面(容器界面)
+
+iptables -t nat -nL
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination         
+(发现没有规则)
+
+# 例子2
+docker run -it -p 2222:22 --name csphere-nat2 busybox sh
+/ # 
+iptables -t nat -L -n
+MASQUERADE  tcp  --  192.168.0.3          192.168.0.3          tcp dpt:22
+
+DNAT       tcp  --  0.0.0.0/0            0.0.0.0/0            tcp dpt:2222 to:192.168.0.3:22
+(对2222的访问直接映射到容器22端口)
+
+
+
+
+iptables -t nat -L -n -v
+
+2、host
+仅主机模式
+(共享宿主机网络，适合)
+ docker run -it --name csphere-host --net=host busybox sh
+ / # ifconfig 
+docker0   Link encap:Ethernet  HWaddr 02:42:69:95:98:CB  
+          inet addr:192.168.0.1  Bcast:0.0.0.0  Mask:255.255.240.0
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:35 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:16 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:2120 (2.0 KiB)  TX bytes:1919 (1.8 KiB)
+
+eth0      Link encap:Ethernet  HWaddr 00:16:3E:03:78:21  
+          inet addr:10.173.39.46  Bcast:10.173.39.255  Mask:255.255.248.0
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:1272 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:2068 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:100306 (97.9 KiB)  TX bytes:167605 (163.6 KiB)
+
+eth1      Link encap:Ethernet  HWaddr 00:16:3E:03:78:2B  
+          inet addr:123.56.72.160  Bcast:123.56.75.255  Mask:255.255.252.0
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:12590 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:10942 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:1463676 (1.3 MiB)  TX bytes:1261517 (1.2 MiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:36 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:36 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:4968 (4.8 KiB)  TX bytes:4968 (4.8 KiB)
+
+veth0a61259 Link encap:Ethernet  HWaddr A2:86:95:A8:8D:81  
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:8 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:648 (648.0 B)  TX bytes:0 (0.0 B)
+
+vethef312e8 Link encap:Ethernet  HWaddr 3A:33:FC:10:71:CE  
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:24 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:24 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:1704 (1.6 KiB)  TX bytes:2567 (2.5 KiB)
+
+
+
+3、other container
+(多个容器共享一个net namespace,其他不共享，两个容器的MAC,IP地址都一样，适合场景:容器和容器之间访问很频繁)
+例子：
+容器a
+ docker run -it --name csphere busybox sh
+/ # ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:00:04  
+          inet addr:192.168.0.4  Bcast:0.0.0.0  Mask:255.255.240.0
+          inet6 addr: fe80::42:c0ff:fea8:4/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:7 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:578 (578.0 B)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+# 容器B
+# --net=container:csphere  (container是网络模式:csphere是使用哪个容器的网络)
+docker run -it --name csphere-con --net=container:csphere  busybox sh
+/ # ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:00:04  
+          inet addr:192.168.0.4  Bcast:0.0.0.0  Mask:255.255.240.0
+          inet6 addr: fe80::42:c0ff:fea8:4/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:648 (648.0 B)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+(可以发现两个容器的网络信息一致)
+
+
+
+4、none
+不配置任何配置，手动配置网络信息
+docker run -it --name csphere-none --net=none  busybox sh
+/ # ifconfig 
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+
+5、overlay (>1.8版本)
+# 删除所有容器
+docker rm -f $(docker ps -a -q)
+
+
+
+# 主机1
+wget https://releases.hashicorp.com/consul/0.7.0/consul_0.7.0_linux_amd64.zip
+unzip consul_0.7.0_linux_amd64.zip -d /usr/local/bin/
+ls -lh /usr/local/bin/consul
+-rwxr-xr-x 1 root root 23M Sep 15 00:16 /usr/local/bin/consul
+
+
+cat config1.sh
+#!/bin/bash
+
+[ -d /data ] || mkdir /data
+consul agent -server -bootstrap -data-dir /data/consul -bind 0.0.0.0 >/var/log/consul.log 2>&1 &
+echo 'DOCKER_OPTS="--kv-store=consul:localhost:8500 --label=com.docker.network.driver.overlay.bind_interface=eth1 --default-network=overlay:multihost"' >/etc/default/docker
+systemctl restart docker
+
+./config1.sh
+
+docker run -it --name test1 busybox sh
+/ # ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:00:02  
+          inet addr:192.168.0.2  Bcast:0.0.0.0  Mask:255.255.240.0
+          inet6 addr: fe80::42:c0ff:fea8:2/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:6 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:508 (508.0 B)
+
+
+
+
+
+# 主机2
+ wget https://releases.hashicorp.com/consul/0.7.0/consul_0.7.0_linux_amd64.zip
+ unzip consul_0.7.0_linux_amd64.zip -d /usr/local/bin/
+
+cat config2.sh
+#!/bin/bash
+
+[ -d /data ] || mkdir /data
+consul agent  -data-dir /data/consul -bind 0.0.0.0 >/var/log/consul.log 2>&1 &
+
+sleep 2
+
+consul join $IP
+
+cat <<-EOS >/etc/default/docker
+DOCKER_OPTS="--kv-store=consul:localhost:8500 --label=com.docker.network.driver.overlay.bind_interface=eth1 --label=com.docker.network.drive.overlay.neighbor_ip=$IP  --default-network=overlay:multihost" 
+EOS
+systemctl restart docker
+# (如果有多台，写一台即可(server))
+# (提示最好改成地址而不是0.0.0.0)
+
+
+
+# 启动服务 
+IP=123.56.72.160 ./config2.sh
+
+consul members
+Node                 Address              Status  Type    Build  Protocol  DC
+ecs-123.56.72.160    123.56.72.160:8301   alive   server  0.7.0  2         dc1
+ecs2-123.56.159.239  123.56.159.239:8301  alive   client  0.7.0  2         dc1
+
+
+docker run -it --name test2 busybox sh
+/ # ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:00:02  
+          inet addr:192.168.0.3  Bcast:0.0.0.0  Mask:255.255.240.0
+          inet6 addr: fe80::42:c0ff:fea8:2/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:648 (648.0 B)
+# ping test1
+
+# (默认是无法访问外网)
+
+
+
+
+
+/etc/hosts  文件会自动被修改添加上记录(容器里)
+
+
+docker network ls
+NETWORK ID          NAME                DRIVER              SCOPE
+c1cb154b1b1c        bridge              bridge              local               
+6a465b1f0009        host                host                local               
+354b9684400f        none                null                local 
+
+docker service ls
+
+# 添加网桥设备
+docker service  publish test-bridge.bridge
+docker service attach test1 test-bridge.bridge  # 绑定到桥设备上
+
+
+
+
+============================================================
+第五课、
+一、创建私有仓库
+
+
+二、上传镜像
+push.sh
+#!/bin/bash
+set -e
+IP=$(ifconfig eth0 | grep inet| awk '{print $2}' | tr -d "addr:")
+
+docker tag csphere/hello:1.0 $IP/csphere/hello:1.0
+docker tag csphere/hello:2.0 $IP/csphere/hello:2.0
+echo "--> docker images tag Rename the complete."
+
+echo "--> start uploading images to the $IP registry server"
+docker push $IP/csphere/hello:1.0
+docker push $IP/csphere/hello:2.0
+echo "--> Image upload to complete!"
+
+
+三、发布
+docker-compose up -d
+(此命令可能需要多次运行，知道容器启动)
+
+
+
+
+--
+swarm 、
+docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+swarm               latest              942fd5fd357e        4 weeks ago         19.47 MB
+busybox             latest              2b8fd9751c4c        12 weeks ago        1.093 MB
+
+
+docker create busybox
+6e87c2b0d891733f0ab9dc0e9545c0453ae3a032d965772ca6b3ee2ce2f59554
+
+cat /etc/default/docker
+DOCKER_OPTS="--insecure-registry=0.0.0.0/0 -H 0.0.0.0:2375 -H unix://var/run/docker.sock --label label_name=docker1"
+systemctl restart docker
+
+docker run -d -p 2376:2375 swarm manage token://
+# 2375是docker主程序的端口号
+
+
+
+docker create 和 docker 区别: create 只是将镜像生成容器，而不运行
+
+jenkins构建的流程  Jenkins服务器-->获取代码 -->构建docker镜像 -->将构建好的docker的镜像上传到registry私有仓库中
+--> 镜像pull下来运行(测试环境运行，开发，生产) 
+
+
+
+
+
+
+
+
+
+
+
+
+===========================================
+第六课、
+docker info
+Containers: 0
+ Running: 0
+ Paused: 0
+ Stopped: 0
+Images: 1
+Server Version: 1.12.1
+Storage Driver: devicemapper
+ Pool Name: docker-202:1-531926-pool
+ Pool Blocksize: 65.54 kB
+ Base Device Size: 10.74 GB
+ Backing Filesystem: xfs
+ Data file: /dev/loop0
+ Metadata file: /dev/loop1
+ Data Space Used: 16.91 MB
+ Data Space Total: 107.4 GB
+ Data Space Available: 40.19 GB
+ Metadata Space Used: 585.7 kB
+ Metadata Space Total: 2.147 GB
+ Metadata Space Available: 2.147 GB
+ Thin Pool Minimum Free Space: 10.74 GB
+ Udev Sync Supported: true
+ Deferred Removal Enabled: false
+ Deferred Deletion Enabled: false
+ Deferred Deleted Device Count: 0
+ Data loop file: /var/lib/docker/devicemapper/devicemapper/data # 文件镜像保存点
+ WARNING: Usage of loopback devices is strongly discouraged for production use. Use `--storage-opt dm.thinpooldev` to specify a custom block storage device.
+ Metadata loop file: /var/lib/docker/devicemapper/devicemapper/metadata
+ Library Version: 1.02.107-RHEL7 (2016-06-09)
+Logging Driver: json-file
+Cgroup Driver: cgroupfs
+Plugins:
+ Volume: local
+ Network: host null overlay bridge
+Swarm: inactive
+Runtimes: runc
+Default Runtime: runc
+Security Options: seccomp
+Kernel Version: 3.10.0-327.el7.x86_64
+Operating System: CentOS Linux 7 (Core)
+OSType: linux
+Architecture: x86_64
+CPUs: 1
+Total Memory: 991.7 MiB
+Name: ecs2-123.56.159.239
+ID: O36C:5XUN:AUIB:7FQR:HNNX:JFAQ:BONL:N6HM:SZJG:HSYQ:IM3S:OKDE
+Docker Root Dir: /var/lib/docker  # 文件根目录
+Debug Mode (client): false
+Debug Mode (server): false
+Registry: https://index.docker.io/v1/
+WARNING: bridge-nf-call-iptables is disabled
+WARNING: bridge-nf-call-ip6tables is disabled
+Insecure Registries:
+ 127.0.0.0/8
+
+
+pwd
+/var/lib/docker/devicemapper
+
+ ls -l
+total 12
+drwx------ 2 root root 4096 Sep 17 10:09 devicemapper
+drwx------ 2 root root 4096 Sep 17 14:23 metadata
+drwxr-xr-x 3 root root 4096 Sep 17 14:21 mnt
+ls -lahs | xargs ls
+
+
+
+# 多个文件目录挂载到同一个目录下
+mount -t aufs -o br=/root/dir1=ro:/root/dir2=rw none /root/aufs
+cat repositories.json | python -mjson.tool
+/var/lib/docker/containers/
+cat config.v2.json | python -mjson.tool
+
+
+
+pwd
+/var/lib/docker/devicemapper/devicemapper
+
+# 总共使用大小是294M
+ ls -lh
+total 294M
+-rw------- 1 root root 100G Sep 17 18:49 data
+-rw------- 1 root root 2.0G Sep 17 18:49 metadata
+
+docker run -it --name test busybox sh
+/ # dd if=/dev/zero of=a.dat bs=2M count=100
+100+0 records in
+100+0 records out
+209715200 bytes (200.0MB) copied, 0.596589 seconds, 335.2MB/s
+/ # ls -lh
+total 204836
+-rw-r--r--    1 root     root      200.0M Sep 17 10:53 a.dat
+# 验证所有的容器会从这里获取空间
+ ls -lah
+total 495M
+drwx------ 2 root root 4.0K Sep 17 18:38 .
+drwx------ 5 root root 4.0K Sep 17 18:49 ..
+-rw------- 1 root root 100G Sep 17 18:54 data
+-rw------- 1 root root 2.0G Sep 17 18:54 metadata
+
+
+
+devicemapper 
+
+
+
+
+https://dev.aliyun.com/detail.html?repoId=3954
+# 连接到容器里
+docker exec -it jenkins '/bin/bash'
+# 浏览器登入
+http://123.56.72.160:8080/
+1、授权
+系统管理 --> Configure Global Security
+    -->Jenkins专有用户数据库
+        -->允许用户注册
+    --> 安全矩阵
+2、新建一个任务
+
+# jenkins功能
+1、检查git仓库是否有更新
+2、需要有docker的功能，(拉取代码以后，需要生成docker镜像，把docker镜像push到registry仓库中)
+
+
+
+
+
+
+
+
+
+###############################3
+修改过的文件
+1、start
+└─> cat ~/second/jenkins/Dockerfile 
+#
+# MAINTAINER        Carson,C.J.Zeong <zcy@nicescale.com>
+# DOCKER-VERSION    1.6.2
+#
+# Dockerizing Jenkins: Dockerfile for building Jenkins images
+#
+FROM       csphere/jdk:1.7.0
+MAINTAINER Carson,C.J.Zeong <zcy@nicescale.com>
+
+ENV JENKINS_HOME /var/jenkins_home
+ENV JENKINS_VERSION 1.609.1
+ENV JENKINS_UC https://updates.jenkins-ci.org
+ENV COPY_REFERENCE_FILE_LOG /var/log/copy_reference_file.log
+
+RUN useradd -d "$JENKINS_HOME" -u 1000 -m -s /bin/bash jenkins
+
+RUN mkdir -p /usr/share/jenkins/ref/init.groovy.d
+
+COPY init.groovy /usr/share/jenkins/ref/init.groovy.d/tcp-slave-agent-port.groovy
+COPY jenkins.war /usr/share/jenkins/jenkins.war
+#RUN curl -fL http://mirrors.jenkins-ci.org/war-stable/$JENKINS_VERSION/jenkins.war -o /usr/share/jenkins/jenkins.war && \
+RUN    chown -R jenkins "$JENKINS_HOME" /usr/share/jenkins/ref && \
+    touch $COPY_REFERENCE_FILE_LOG && chown jenkins.jenkins $COPY_REFERENCE_FILE_LOG
+
+USER jenkins
+
+VOLUME /var/jenkins_home
+
+EXPOSE 8080 50000
+
+COPY jenkins.sh /usr/local/bin/jenkins.sh
+
+ENTRYPOINT ["/usr/local/bin/jenkins.sh"]
+1、end
+
+
+docker 拷贝文件
+docker cp <containerId>:/file/path/within/container /host/path/target  
+
+
+
+
+
+
+
+########################
+配置
+修改maven根目录下的conf文件夹中的setting.xml文件，内容如下：
+maven 修改
+<mirrors>
+<mirror>
+  <id>alimaven</id>
+  <name>aliyun maven</name>
+  <url>http://maven.aliyun.com/nexus/content/groups/public/</url>
+  <mirrorOf>central</mirrorOf>        
+</mirror>
+</mirrors>
